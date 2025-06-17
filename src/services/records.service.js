@@ -54,52 +54,51 @@ class RecordsService {
     // Promesa para manejar el proceso de lectura y guardado del archivo.
     const processFile = new Promise((resolve, reject) => {
       // Crea un "stream" para leer el archivo poco a poco (para no llenar la memoria).
-      fs.createReadStream(file.path)
-        // Esto convierte cada línea del CSV en un objeto JavaScript.
-        .pipe(csv())
-        // Cuando el parser de CSV encuentra una línea (un "dato"):
-        .on("data", async (data) => {
-          try {
-            // Valida que el registro tenga los datos correctos (ID, nombre, email, etc.)
-            const validatedRecord = this.validateRecord(data);
-            // Agrega el registro validado al lote actual.
-            currentBatch.push(validatedRecord);
-            // Incrementa el contador de registros leídos.
-            totalRecords++;
+      const stream = fs.createReadStream(file.path).pipe(csv());
 
-            // Si el lote actual tiene 5000 registros o más:
-            if (currentBatch.length >= this.BATCH_SIZE) {
-              // Guarda estos 5000 registros en la base de datos de una vez.
-              await Records.insertMany(currentBatch, { ordered: false });
-              // Actualiza cuántos registros se han procesado exitosamente.
-              recordsProcessed += currentBatch.length;
-              // Vacía el lote para el siguiente grupo de registros.
-              currentBatch = [];
-            }
-          } catch (error) {
-            // Detiene el proceso y rechaza la promesa si hay un error.
-            reject(error);
+      stream.on("data", (data) => {
+        try {
+          const validatedRecord = this.validateRecord(data);
+          currentBatch.push(validatedRecord);
+          totalRecords++;
+
+          if (currentBatch.length >= this.BATCH_SIZE) {
+            stream.pause(); // Pausa la lectura
+            Records.insertMany(currentBatch, { ordered: false })
+              .then(() => {
+                recordsProcessed += currentBatch.length;
+                currentBatch = [];
+                stream.resume(); // Reanuda la lectura
+              })
+              .catch((error) => {
+                reject(error);
+              });
           }
-        })
-        // Cuando se termina de leer todo el archivo:
-        .on("end", async () => {
-          try {
-            // Si quedan registros en el último lote (menos de 5000), los guarda también.
-            if (currentBatch.length > 0) {
-              await Records.insertMany(currentBatch, { ordered: false });
-              recordsProcessed += currentBatch.length;
-            }
-            resolve();
-          } catch (error) {
-            // Detiene el proceso y rechaza la promesa si hay un error.
-            reject(error);
-          }
-        })
-        // Si hay algún error durante la lectura del archivo (ej. archivo corrupto):
-        .on("error", (error) => {
-          // Rechaza la promesa con el error.
+        } catch (error) {
           reject(error);
-        });
+        }
+      });
+
+      // Cuando se termina de leer todo el archivo:
+      stream.on("end", async () => {
+        try {
+          // Si quedan registros en el último lote (menos de 5000), los guarda también.
+          if (currentBatch.length > 0) {
+            await Records.insertMany(currentBatch, { ordered: false });
+            recordsProcessed += currentBatch.length;
+          }
+          resolve();
+        } catch (error) {
+          // Detiene el proceso y rechaza la promesa si hay un error.
+          reject(error);
+        }
+      });
+
+      // Si hay algún error durante la lectura del archivo (ej. archivo corrupto):
+      stream.on("error", (error) => {
+        // Rechaza la promesa con el error.
+        reject(error);
+      });
     });
 
     // Espera a que todo el proceso de lectura y guardado del archivo termine.
